@@ -1,0 +1,12 @@
+{
+  "name": "kosli-honeycomb",
+  "description": "Kosli Honeycomb observability plugins",
+  "plugins": [
+    {
+      "name": "honeycomb",
+      "description": "Query, explore, and analyze Honeycomb observability data with secure credential management",
+      "version": "0.1.0",
+      "path": "."
+    }
+  ]
+}
