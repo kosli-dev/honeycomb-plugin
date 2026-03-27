@@ -4,14 +4,20 @@
   "description": "Query and explore Honeycomb observability data with secure credential management",
   "userConfig": {
     "honeycomb_management_key": {
-      "description": "Honeycomb Management API key (format: keyID:secret). Get one from Team Settings → API Keys in Honeycomb.",
+      "type": "string",
+      "title": "Honeycomb Management API key",
+      "description": "Format: keyID:secret. Get one from Team Settings → API Keys in Honeycomb.",
       "sensitive": true
     },
     "honeycomb_team_slug": {
-      "description": "Your Honeycomb team slug (visible in the URL when logged into Honeycomb)"
+      "type": "string",
+      "title": "Honeycomb team slug",
+      "description": "Your team slug (visible in the URL when logged into Honeycomb)"
     },
     "honeycomb_api_base": {
-      "description": "Honeycomb API base URL (default: https://api.honeycomb.io). Use https://api.eu1.honeycomb.io for EU.",
+      "type": "string",
+      "title": "Honeycomb API base URL",
+      "description": "Use https://api.eu1.honeycomb.io for EU. Defaults to https://api.honeycomb.io",
       "default": "https://api.honeycomb.io"
     }
   }

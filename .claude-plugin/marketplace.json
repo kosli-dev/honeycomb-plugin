@@ -1,12 +1,17 @@
 {
   "name": "kosli-honeycomb",
-  "description": "Kosli Honeycomb observability plugins",
+  "owner": {
+    "name": "Kosli",
+    "email": "alex.kantor@kosli.com"
+  },
   "plugins": [
     {
       "name": "honeycomb",
       "description": "Query, explore, and analyze Honeycomb observability data with secure credential management",
-      "version": "0.1.0",
-      "path": "."
+      "source": {
+        "source": "url",
+        "url": "https://github.com/kosli-dev/honeycomb-plugin.git"
+      }
     }
   ]
 }
