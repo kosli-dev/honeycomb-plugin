@@ -4,10 +4,11 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { HoneycombClient } from "./honeycomb-client.js";
+import { sanitise } from "./sanitise.js";
 
 const server = new McpServer({
   name: "honeycomb",
-  version: "0.1.0",
+  version: "0.2.0",
 });
 
 let client: HoneycombClient;
@@ -15,8 +16,28 @@ let client: HoneycombClient;
 try {
   client = new HoneycombClient();
 } catch (err: any) {
+  // This error message is safe — it only says "run setup.sh"
   console.error(`Failed to initialise Honeycomb client: ${err.message}`);
   process.exit(1);
+}
+
+/**
+ * Wrap a tool handler so any thrown error is sanitised before
+ * being returned to Claude via MCP.
+ */
+function safeTool<T extends any[]>(
+  fn: (...args: T) => Promise<{ content: Array<{ type: "text"; text: string }> }>
+) {
+  return async (...args: T) => {
+    try {
+      return await fn(...args);
+    } catch (err: any) {
+      return {
+        content: [{ type: "text" as const, text: sanitise(err.message || "Unknown error") }],
+        isError: true,
+      };
+    }
+  };
 }
 
 // --- Tools ---
@@ -25,12 +46,12 @@ server.tool(
   "honeycomb_list_environments",
   "List all Honeycomb environments available to the configured team",
   {},
-  async () => {
+  safeTool(async () => {
     const envs = await client.listEnvironments();
     return {
       content: [{ type: "text", text: JSON.stringify(envs, null, 2) }],
     };
-  }
+  })
 );
 
 server.tool(
@@ -39,13 +60,13 @@ server.tool(
   {
     environment: z.string().describe("Environment name, slug, or ID"),
   },
-  async ({ environment }) => {
+  safeTool(async ({ environment }) => {
     const env = await client.resolveEnvironment(environment);
     const datasets = await client.listDatasets(env.id);
     return {
       content: [{ type: "text", text: JSON.stringify(datasets, null, 2) }],
     };
-  }
+  })
 );
 
 server.tool(
@@ -55,13 +76,13 @@ server.tool(
     environment: z.string().describe("Environment name, slug, or ID"),
     dataset: z.string().describe("Dataset name or slug"),
   },
-  async ({ environment, dataset }) => {
+  safeTool(async ({ environment, dataset }) => {
     const env = await client.resolveEnvironment(environment);
     const columns = await client.listColumns(env.id, dataset);
     return {
       content: [{ type: "text", text: JSON.stringify(columns, null, 2) }],
     };
-  }
+  })
 );
 
 server.tool(
@@ -97,7 +118,7 @@ server.tool(
     granularity: z.number().optional().describe("Bucket granularity in seconds"),
     limit: z.number().optional().describe("Max results to return"),
   },
-  async ({ environment, dataset, calculations, filters, breakdowns, time_range, granularity, limit }) => {
+  safeTool(async ({ environment, dataset, calculations, filters, breakdowns, time_range, granularity, limit }) => {
     const env = await client.resolveEnvironment(environment);
     const query: any = { calculations, time_range };
     if (filters?.length) query.filters = filters;
@@ -109,7 +130,7 @@ server.tool(
     return {
       content: [{ type: "text", text: JSON.stringify(results, null, 2) }],
     };
-  }
+  })
 );
 
 server.tool(
@@ -120,7 +141,7 @@ server.tool(
     dataset: z.string().describe("Dataset name or slug"),
     slo_id: z.string().optional().describe("Specific SLO ID to get details for"),
   },
-  async ({ environment, dataset, slo_id }) => {
+  safeTool(async ({ environment, dataset, slo_id }) => {
     const env = await client.resolveEnvironment(environment);
     if (slo_id) {
       const slo = await client.getSLO(env.id, dataset, slo_id);
@@ -132,7 +153,7 @@ server.tool(
     return {
       content: [{ type: "text", text: JSON.stringify(slos, null, 2) }],
     };
-  }
+  })
 );
 
 server.tool(
@@ -142,7 +163,7 @@ server.tool(
     environment: z.string().describe("Environment name, slug, or ID"),
     board_id: z.string().optional().describe("Specific board ID to get details for"),
   },
-  async ({ environment, board_id }) => {
+  safeTool(async ({ environment, board_id }) => {
     const env = await client.resolveEnvironment(environment);
     if (board_id) {
       const board = await client.getBoard(env.id, board_id);
@@ -154,7 +175,7 @@ server.tool(
     return {
       content: [{ type: "text", text: JSON.stringify(boards, null, 2) }],
     };
-  }
+  })
 );
 
 server.tool(
@@ -164,26 +185,36 @@ server.tool(
     environment: z.string().describe("Environment name, slug, or ID"),
     dataset: z.string().describe("Dataset name or slug"),
   },
-  async ({ environment, dataset }) => {
+  safeTool(async ({ environment, dataset }) => {
     const env = await client.resolveEnvironment(environment);
     const triggers = await client.getTriggers(env.id, dataset);
     return {
       content: [{ type: "text", text: JSON.stringify(triggers, null, 2) }],
     };
-  }
+  })
 );
 
 // --- Graceful shutdown: clean up ephemeral keys ---
 
+let shuttingDown = false;
+
 async function shutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
   console.error("Shutting down — cleaning up ephemeral API keys...");
-  await client.cleanupAllKeys();
+  try {
+    await client.cleanupAllKeys();
+  } catch {
+    // Best effort — don't block shutdown
+  }
   process.exit(0);
 }
 
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
-process.on("beforeExit", () => client.cleanupAllKeys());
+process.on("beforeExit", () => {
+  if (!shuttingDown) client.cleanupAllKeys().catch(() => {});
+});
 
 // --- Start ---
 
@@ -194,6 +225,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error("Fatal error:", err);
+  console.error("Fatal error:", sanitise(err.message || "Unknown error"));
   process.exit(1);
 });

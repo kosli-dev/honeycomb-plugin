@@ -1,12 +1,19 @@
 /**
  * Honeycomb API client with ephemeral key management.
  *
- * Uses a Management API key to create short-lived Configuration keys
- * scoped to specific environments. Ephemeral keys are cached for their
- * lifetime and cleaned up on expiry or server shutdown.
+ * Uses a Management API key (read from macOS Keychain at startup) to
+ * create short-lived Configuration keys scoped to specific environments.
+ * Ephemeral keys are cached for their lifetime and cleaned up on expiry
+ * or server shutdown.
+ *
+ * The management key and ephemeral key secrets never cross the MCP
+ * boundary — they exist only in this server process's memory.
  */
 
-const DEFAULT_API_BASE = "https://api.honeycomb.io";
+import { readManagementKey } from "./keychain.js";
+import { readConfig } from "./config.js";
+import { registerSecret, sanitise } from "./sanitise.js";
+
 const EPHEMERAL_KEY_TTL_MINUTES = 30;
 
 interface EphemeralKey {
@@ -56,24 +63,26 @@ export class HoneycombClient {
   private ephemeralKeys: Map<string, EphemeralKey> = new Map();
 
   constructor() {
-    const mgmtKey = process.env.HONEYCOMB_MGMT_KEY;
-    const teamSlug = process.env.HONEYCOMB_TEAM;
-    const apiBase = process.env.HONEYCOMB_API_BASE || DEFAULT_API_BASE;
-
+    const mgmtKey = readManagementKey();
     if (!mgmtKey) {
       throw new Error(
-        "HONEYCOMB_MGMT_KEY not set. Configure your Management API key in the plugin settings."
+        "Honeycomb credentials not configured. Run ./setup.sh to set up."
       );
     }
-    if (!teamSlug) {
+
+    const config = readConfig();
+    if (!config) {
       throw new Error(
-        "HONEYCOMB_TEAM not set. Configure your team slug in the plugin settings."
+        "Honeycomb config not found at ~/.config/kosli-honeycomb/config.json. Run ./setup.sh to set up."
       );
     }
 
     this.mgmtKey = mgmtKey;
-    this.teamSlug = teamSlug;
-    this.apiBase = apiBase.replace(/\/$/, "");
+    this.teamSlug = config.teamSlug;
+    this.apiBase = config.apiBase.replace(/\/$/, "");
+
+    // Register the management key so it gets stripped from any error output
+    registerSecret(this.mgmtKey);
   }
 
   // --- Management API calls (use Management Key) ---
@@ -83,15 +92,18 @@ export class HoneycombClient {
     const response = await fetch(url, {
       ...options,
       headers: {
-        "Authorization": `Bearer ${this.mgmtKey}`,
-        "Content-Type": "application/json",
+        Authorization: `Bearer ${this.mgmtKey}`,
+        "Content-Type": "application/vnd.api+json",
+        Accept: "application/vnd.api+json",
         ...options.headers,
       },
     });
 
     if (!response.ok) {
       const body = await response.text();
-      throw new Error(`Honeycomb Management API error (${response.status}): ${body}`);
+      throw new Error(
+        sanitise(`Honeycomb Management API error (${response.status}): ${body}`)
+      );
     }
 
     return response;
@@ -99,7 +111,7 @@ export class HoneycombClient {
 
   async listEnvironments(): Promise<HoneycombEnvironment[]> {
     const resp = await this.mgmtFetch(`/2/teams/${this.teamSlug}/environments`);
-    const data = await resp.json() as any;
+    const data = (await resp.json()) as any;
     return (data.data || []).map((env: any) => ({
       id: env.id,
       name: env.attributes?.name || env.id,
@@ -139,7 +151,7 @@ export class HoneycombClient {
       }),
     });
 
-    const data = await resp.json() as any;
+    const data = (await resp.json()) as any;
     const key: EphemeralKey = {
       keyId: data.data.id,
       secret: data.data.attributes.secret,
@@ -148,6 +160,10 @@ export class HoneycombClient {
       expiresAt,
     };
 
+    // Register ephemeral key material for sanitisation
+    registerSecret(key.secret);
+    registerSecret(key.keyId);
+
     this.ephemeralKeys.set(environmentId, key);
     return key;
   }
@@ -155,17 +171,15 @@ export class HoneycombClient {
   private async getEphemeralKey(environmentId: string): Promise<string> {
     const existing = this.ephemeralKeys.get(environmentId);
     if (existing && existing.expiresAt > Date.now() + 60_000) {
-      // Reuse if more than 1 minute of life remaining
-      return `${existing.keyId}${existing.secret}`;
+      return existing.secret;
     }
 
-    // Clean up expired key if it exists
     if (existing) {
       await this.deleteEphemeralKey(existing.keyId).catch(() => {});
     }
 
     const key = await this.createEphemeralKey(environmentId);
-    return `${key.keyId}${key.secret}`;
+    return key.secret;
   }
 
   private async deleteEphemeralKey(keyId: string): Promise<void> {
@@ -202,7 +216,9 @@ export class HoneycombClient {
 
     if (!response.ok) {
       const body = await response.text();
-      throw new Error(`Honeycomb API error (${response.status}): ${body}`);
+      throw new Error(
+        sanitise(`Honeycomb API error (${response.status}): ${body}`)
+      );
     }
 
     return response;
@@ -210,19 +226,23 @@ export class HoneycombClient {
 
   async listDatasets(environmentId: string): Promise<HoneycombDataset[]> {
     const resp = await this.envFetch(environmentId, "/1/datasets");
-    return await resp.json() as HoneycombDataset[];
+    return (await resp.json()) as HoneycombDataset[];
   }
 
   async listColumns(environmentId: string, dataset: string): Promise<HoneycombColumn[]> {
-    const resp = await this.envFetch(environmentId, `/1/columns/${encodeURIComponent(dataset)}`);
-    return await resp.json() as HoneycombColumn[];
+    const resp = await this.envFetch(
+      environmentId,
+      `/1/columns/${encodeURIComponent(dataset)}`
+    );
+    return (await resp.json()) as HoneycombColumn[];
   }
 
   async createQuery(environmentId: string, dataset: string, query: QuerySpec): Promise<any> {
-    const resp = await this.envFetch(environmentId, `/1/queries/${encodeURIComponent(dataset)}`, {
-      method: "POST",
-      body: JSON.stringify(query),
-    });
+    const resp = await this.envFetch(
+      environmentId,
+      `/1/queries/${encodeURIComponent(dataset)}`,
+      { method: "POST", body: JSON.stringify(query) }
+    );
     return await resp.json();
   }
 
@@ -235,11 +255,9 @@ export class HoneycombClient {
   }
 
   async runQuery(environmentId: string, dataset: string, query: QuerySpec): Promise<any> {
-    // Create the query
     const created = await this.createQuery(environmentId, dataset, query);
     const queryId = created.id;
 
-    // Poll for results (max 30 seconds)
     const deadline = Date.now() + 30_000;
     while (Date.now() < deadline) {
       try {
@@ -257,8 +275,11 @@ export class HoneycombClient {
   }
 
   async getSLOs(environmentId: string, dataset: string): Promise<any[]> {
-    const resp = await this.envFetch(environmentId, `/1/slos/${encodeURIComponent(dataset)}`);
-    return await resp.json() as any[];
+    const resp = await this.envFetch(
+      environmentId,
+      `/1/slos/${encodeURIComponent(dataset)}`
+    );
+    return (await resp.json()) as any[];
   }
 
   async getSLO(environmentId: string, dataset: string, sloId: string): Promise<any> {
@@ -271,7 +292,7 @@ export class HoneycombClient {
 
   async getBoards(environmentId: string): Promise<any[]> {
     const resp = await this.envFetch(environmentId, "/1/boards");
-    return await resp.json() as any[];
+    return (await resp.json()) as any[];
   }
 
   async getBoard(environmentId: string, boardId: string): Promise<any> {
@@ -280,8 +301,11 @@ export class HoneycombClient {
   }
 
   async getTriggers(environmentId: string, dataset: string): Promise<any[]> {
-    const resp = await this.envFetch(environmentId, `/1/triggers/${encodeURIComponent(dataset)}`);
-    return await resp.json() as any[];
+    const resp = await this.envFetch(
+      environmentId,
+      `/1/triggers/${encodeURIComponent(dataset)}`
+    );
+    return (await resp.json()) as any[];
   }
 
   // --- Helper: resolve environment by name or slug ---

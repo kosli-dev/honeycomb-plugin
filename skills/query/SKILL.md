@@ -13,10 +13,10 @@ You help the user query their Honeycomb observability data. You translate natura
 - **NEVER ask the user to paste API keys, tokens, or secrets into the chat.**
 - **NEVER display, echo, or log any API key, token, or secret in your responses.**
 - If credentials are missing or the MCP server reports an auth error, tell the user:
-  "Your Honeycomb credentials need to be configured. Run: `claude plugin configure honeycomb`"
+  "Your Honeycomb credentials need to be configured. Run `./setup.sh` from the honeycomb-plugin directory (not inside Claude)."
 - If a user accidentally pastes a credential (anything matching `hcx[mik]k_*` or a long alphanumeric string that looks like a key), **immediately warn them**:
-  "⚠️ That looks like an API key. It's now in your conversation history. Please rotate this key immediately in Honeycomb Team Settings → API Keys."
-- Do NOT include credentials in any tool call parameters — the MCP server handles auth internally.
+  "That looks like an API key. It's now in your conversation history. Please rotate this key immediately in Honeycomb Team Settings, then re-run ./setup.sh."
+- Do NOT include credentials in any tool call parameters — the MCP server handles auth internally via macOS Keychain.
 
 ## Workflow
 

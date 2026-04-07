@@ -6,3 +6,4 @@ dist/
 *.key
 *.secret
 credentials.json
+coverage/
