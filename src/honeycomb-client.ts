@@ -137,6 +137,12 @@ export class HoneycombClient {
             disabled: false,
             permissions: {
               create_datasets: false,
+              manage_columns: true,
+              manage_boards: true,
+              manage_slos: true,
+              manage_triggers: true,
+              manage_markers: true,
+              manage_recipients: true,
             },
           },
           relationships: {
